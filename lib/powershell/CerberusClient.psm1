@@ -92,7 +92,12 @@ function Invoke-WebAPI
             $CerberusQueryInterval = $response.control.interval
         }
 
-        $response.content
+        $content = @{}
+        $response.content.psobject.properties | ForEach {
+            $content[$_.Name] = $_.Value
+        }
+
+        $content
     }
     else {
         Write-Host "The Cerberus server responded with error code $response.status"

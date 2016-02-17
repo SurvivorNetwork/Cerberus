@@ -6,12 +6,16 @@ Import-Module -Force -Prefix RCON .\lib\powershell\PZRconClient.psm1
 
 $Cerberus = @{
     Version              = "0.2.0"
-    Homepage             = "http://tools.survivor.network/cerberus"
+    Homepage             = "https://github.com/SurvivorNetwork/Cerberus"
     ConfigFile           = "$(Get-ScriptDirectory)\cerberus.ini"
     Config               = $null
     ServiceResolution    = 10
-    WorkshopPollInterval = 12000
+    WorkshopPollInterval = 120
+    WorkshopUpdateTimes  = @{}
     SurvivorNetAPIKey    = $null
+    Operations           = New-Object 'System.Collections.Generic.LinkedList[hashtable]'
+    Timer                = New-Object System.Diagnostics.Stopwatch
+    Alarms               = New-Object System.Collections.ArrayList
 }
 
 $PZServer = @{
@@ -27,40 +31,37 @@ $PZServer = @{
     RestartWorkshop  = $False
     RestartDown      = $False
     RestartInterval  = $False
+    WarningIndex     = 0
     WarningIntervals = @(0)
     WarningMessage   = "The server is going down for maintenance {0}"
     SteamPlayerID    = $null
 
-    Operation       = "idle"
-    RestartQueued   = $False
     Status          = $null
     WMIObject       = $null
     Process         = $null
 }
 
+function Initialize-Cerberus {
+    Param(
+        [Parameter(Mandatory=$True,Position=1)]
+            [hashtable]$options
+    )
 
-
-function Initialize-CerberusConfig {
-    $configuration   = Get-IniContent $Cerberus.ConfigFile
-
-    $Cerberus.Config = $configuration[ "Cerberus" ]
+    $Cerberus.Config = $options[ "Cerberus" ]
 
     if( $Cerberus.Config.WorkshopPollInterval )
+    {
         $Cerberus.WorkshopPollInterval = $Cerberus.Config.WorkshopPollInterval
+    }
 
     if( $Cerberus.Config.ServiceResolution )
+    {
         $Cerberus.ServiceResolution = $Cerberus.Config.ServiceResolution
+    }
 
     if( $Cerberus.Config.SurvivorNetAPIKey )
+    {
         $Cerberus.SurvivorNetAPIKey = $Cerberus.Config.SurvivorNetAPIKey
-
-    Initialize-PZServer $configuration[ "Project Zomboid Server" ]
-    Initialize-RCONClient $configuration[ "Project Zomboid RCON Client" ] @{
-        Path       = "$($PZServer.Path)\rcon"
-        JavaBinary = "$($PZServer.Path)\jre\bin\java.exe"
-        Port       = $PZServer.Config.RCONPort
-        Password   = $PZServer.Config.Password
-        IP         = "127.0.0.1"
     }
 }
 
@@ -72,32 +73,34 @@ function Initialize-RCONClient {
             [hashtable]$defaults
     )
 
-    if( [string]::IsNullOrWhitespace( $options.Path ) ) {
-        Set-RCONClientPath $defaults.Path
-    }
-    else {
+    $options = $options[ "Project Zomboid RCON Client" ]
+
+    if( $options -and ! [string]::IsNullOrWhitespace( $options.Path ) ) {
         Set-RCONClientPath $options.Path
     }
-
-    if( [string]::IsNullOrWhitespace( $options.JavaBinary ) ) {
-        Set-RCONClientPath $defaults.JavaBinary
-    }
     else {
-        Set-RCONClientPath $options.JavaBinay
+        Set-RCONClientPath $defaults.Path
     }
 
-    if( [string]::IsNullOrWhitespace( $options.Port ) ) {
-        Set-RCONClientPath $defaults.Port
+    if( $options -and ! [string]::IsNullOrWhitespace( $options.JavaBinary ) ) {
+        Set-RCONJavaBinary $options.JavaBinary
     }
     else {
-        Set-RCONClientPath $options.Port
+        Set-RCONJavaBinary $defaults.JavaBinary
     }
 
-    if( [string]::IsNullOrWhitespace( $options.Password ) ) {
-        Set-RCONClientPath $defaults.Password
+    if( $options -and ! [string]::IsNullOrWhitespace( $options.Port ) ) {
+        Set-RCONPort $options.Port
     }
     else {
-        Set-RCONClientPath $options.Password
+        Set-RCONPort $defaults.Port
+    }
+
+    if( $options -and ! [string]::IsNullOrWhitespace( $options.Password ) ) {
+        Set-RCONPassword $options.Password
+    }
+    else {
+        Set-RCONPassword $defaults.Password
     }
 
     #Test-RCONConfig
@@ -109,6 +112,8 @@ function Initialize-PZServer {
             [hashtable]$options
     )
 
+    $options = $options[ "Project Zomboid Server" ]
+
     $PZServer.ConfigFile       = $options.ConfigFile
     $PZServer.Config           = $( Get-IniContent $PZServer.ConfigFile )[ "No-Section" ]
     $PZServer.Path             = $options.Path
@@ -119,8 +124,8 @@ function Initialize-PZServer {
     $PZServer.SteamPlayerID    = $PZServer.Config.ServerPlayerID
     $PZServer.WorkshopItems    = $PZServer.Config.WorkshopItems
 
-    $PZServer.AppId            = Get-Content $PZServer.Path\steam_appid.txt
-    $PZServer.SVNRevision      = Get-Content $PZServer.Path\SVNRevision.txt
+    $PZServer.AppId            = Get-Content "$($PZServer.Path)\steam_appid.txt"
+    $PZServer.SVNRevision      = Get-Content "$($PZServer.Path)\SVNRevision.txt"
 
     # Start command Pre-Processing
     $startArgs = $PZServer.StartCommand.split( " " )
@@ -136,6 +141,7 @@ function Initialize-PZServer {
         $PZServer.WarningMessage = $options.WarningMessage
 
         if( ! [string]::IsNullOrWhitespace( $options.WarningIntervals ) )
+        {
             # Convert comma-delimited string of seconds to integer array of milliseconds
             $PZServer.WarningIntervals = $options.WarningIntervals.Split(",")
 
@@ -171,107 +177,29 @@ function Initialize-PZServer {
 
     Update-ServerStatus
 }
-
-$CerberusVersion       = 0.1
-$CerberusURL           = "http://zeekshaven.net"
-$CerberusConfigFile    = "$(Get-ScriptDirectory)\cerberus.ini"
-$CycleInterval         = 10
  
 #$PZLatestVersionJSON   = (New-Object Net.WebClient).DownloadString( "http://projectzomboid.com/version_announce" )
- 
-$CerberusConfig        = Get-IniContent $CerberusConfigFile
-$ServerConfigFile      = $CerberusConfig[ "Project Zomboid Server" ][ "ConfigFile" ]
-$ServerStartCommand    = $CerberusConfig[ "Project Zomboid Server" ][ "StartCommand" ]
-$CerberusPollWorkshop  = $CerberusConfig[ "Project Zomboid Server" ][ "RestartOnWorkshopUpdates" ]
-$RestartOnCrash        = $CerberusConfig[ "Project Zomboid Server" ][ "RestartOnCrash" ]
-$CerberusPollInterval  = $CerberusConfig[ "Cerberus" ][ "WorkshopPollInterval" ]
-$ServerWarningInterval = $CerberusConfig[ "Project Zomboid Server" ][ "ShutdownWarningInterval" ]
-$ServerWarning         = $CerberusConfig[ "Project Zomboid Server" ][ "ShutdownWarning" ]
-
-$ServerConfig          = Get-IniContent $ServerConfigFile
-$ServerPath            = $CerberusConfig[ "Project Zomboid Server" ][ "Path" ]
-$ServerPlayerId        = $ServerConfig[ "No-Section" ][ "ServerPlayerID" ]
-$ServerAppId           = Get-Content $ServerPath\steam_appid.txt
-$ServerSvnRevision     = Get-Content $ServerPath\SVNRevision.txt
-$ServerWorkshopItems   = $ServerConfig[ "No-Section" ][ "WorkshopItems" ]
-
-$ServerExecutable = $null
-$ServerStartArgs = @()
-$ShutdownWarningIndex = $ServerWarningInterval.Length
-$ShutdownTimer = $null
-$ServerWMIObject = $null
-$ServerProcess = $null
-$ServerStatus = $null
-$Operation = "idle"
-$Restart = $False
-
-function Initialize-Cerberus {
-    #Controller Initialization
-    #  - Steam Workshop Item IDs
-    if( [string]::IsNullOrWhitespace( $ServerWorkshopItems ) )
-    {
-        $script:ServerWorkshopItems = @()
-    }
-    else
-    {
-        $script:ServerWorkshopItems = $ServerWorkshopItems.Split(",")
-    }
-
-    #  - Shutdown Warning Intervals
-    if( [string]::IsNullOrWhitespace( $ServerWarningInterval ) )
-    {
-        $script:ServerWarningInterval = @(0)
-    }
-    else
-    {
-        $script:ServerWarningInterval = $ServerWarningInterval.Split(",")
-
-        For( $i = 0; $i -lt $ServerWarningInterval.Length; $i++ )
-        {
-            [int]$script:ServerWarningInterval[ $i ] = [convert]::ToInt32( $ServerWarningInterval[ $i ], 10 ) * 1000
-        }
-    }
-
-    #  - Server Start Command Pre-Processing
-    $startArgs = $ServerStartCommand.split( " " )
-    $script:ServerExecutable = $startArgs[0]
-    if( $startArgs.Length > 1 )
-    {
-        $script:ServerStartArgs = $startArgs[ 1..$startArgs.Length ]
-    }
-
-    #  - Get Current Server Status
-    Update-ServerStatus
-
-    #Cerberus Web-Client Initialization
-    
-    #PZ RCON-Client Initialization
-    Set-RCONJavaBinary "$ServerPath\jre\bin\java.exe"
-    Set-RCONClientPath "$ServerPath\rcon"
-    Set-RCONPort $ServerConfig[ "No-Section" ][ "RCONPort" ]
-    Set-RCONPassword $ServerConfig[ "No-Section" ][ "RCONPassword" ]
-}  
 
 function Write-ConsoleHeader {
     #Write-Host $PZLatestVersionJSON
     Get-Content "$(Get-ScriptDirectory)\lib\asciiheader.txt"
-    Write-Host `r`n"     SurvivorNet Cerberus v$CerberusVersion by Aniketos   -   $CerberusURL"
-    Write-Host `r`n"     Project Zomboid server App ID: $ServerAppId   -   SVN Revision: $ServerSvnRevision"
+    Write-Host `r`n"     SurvivorNet Cerberus v$($Cerberus.Version) by Aniketos   -   $($Cerberus.Homepage)"
+    Write-Host `r`n"     Project Zomboid Server SVN Revision: $($PZServer.SVNRevision)"
     Write-Host `r`n
 
     Write-Host "  Active Configuration (from cerberus.ini):"
 
-    if( $CerberusPollWorkshop )
+    if( $PZServer.RestartWorkshop )
     {
         Write-Host "    * Restart Server on Workshop Item Updates"
-        Write-Host "    * Tracking Workshop IDs: $($ServerWorkshopItems -join ", ")"
+        Write-Host "    * Tracking Workshop IDs: $($PZServer.WorkshopItems -join ", ")"
     }
     else
     {
         Write-Host "    * Do not restart server on Workshop item updates"
     }
 
-    if( $RestartOnCrash )
+    if( $PZServer.RestartDown )
     {
         Write-Host "    * Restart server if not running"
     }
@@ -280,20 +208,14 @@ function Write-ConsoleHeader {
         Write-Host "    * Do not restart Server if not running"
     }
 
-    Write-Host "    * Service resolution of $CycleInterval seconds"
+    Write-Host "    * Service resolution of $($Cerberus.ServiceResolution) seconds"
     Write-Host "    * Shutdown warnings at (ms prior):"
-    Write-Host "          $($ServerWarningInterval -join ", ")"
-
-    #For( $i = 0; $i -lt $ServerWarningInterval.Length; $i++ )
-    #{
-    #    Write-Host "        $($i): $($ServerWarningInterval[ $i ] / 1000)"
-    #}
-
+    Write-Host "          $($PZServer.WarningIntervals -join ", ")"
     Write-Host `r`n
 
-    if( $ServerStatus -eq "up" )
+    if( $PZServer.Status -eq "up" )
     {
-        Write-Log "Project Zomboid server is running. Siccing Cerberus on process #$( $ServerProcess.Id )" "Cyan"
+        Write-Log "Project Zomboid server is running. Siccing Cerberus on PID #$( $PZServer.Process.Id )" "Cyan"
     }
 }
 
@@ -302,14 +224,14 @@ function Test-Configuration {
     $status = 0
 
     # Check for Cerberus Configuration File
-    if( ! ( Test-Path $CerberusConfigFile ) )
+    if( ! ( Test-Path $Cerberus.ConfigFile ) )
     {
         Write-Log "FATAL: cerberus.ini not found" "Red"
         Stop-Preflight 1
     }
 
     # Check for Server Configuration File
-    if( ! ( Test-Path $ServerConfigFile ) )
+    if( ! ( Test-Path $PZServer.ConfigFile ) )
     {
         Write-Log "FATAL: servertest.ini not found" "Red"
         Stop-Preflight 2
@@ -379,20 +301,131 @@ function Write-Log ($string, $color) {
     "[$(get-date -Format 'hh:mm, dd/MM')] $($string)" | Out-File .\logs\$(Get-Date -Format dd-MM-yyyy).log -Append -Encoding ASCII 
 }
 
+function Add-Alarm {
+    Param(
+        [Parameter(Mandatory=$True,Position=1)]
+            [string]$Name,
+        [Parameter(Mandatory=$True,Position=2)]
+            [int]$SecondsDelay,
+        [Parameter(Mandatory=$True,Position=3)]
+            [string]$Callback,
+        [Parameter(Mandatory=$False,Position=4)]
+            [int]$Repeat
+    )
+
+    if( ! ( Find-Alarm $Name ) )
+    {
+        if( ! $Repeat )
+        {
+            $Repeat = 0
+        }
+
+        $Cerberus.Alarms.Add( @{
+            Name      = $Name
+            Delay     = $SecondsDelay * 1000
+            Activate  = $Cerberus.Timer.ElapsedMilliseconds + $SecondsDelay * 1000
+            Callback  = $Callback
+            Repeat    = $Repeat
+        } ) | Out-Null
+
+        #Write-Log "DEBUG: Added alarm $Name in $SecondsDelay seconds. Set to repeat $Repeat times" "Yellow"
+    }
+    else
+    {
+        Write-Log "Cannot add alarm ${Name}: Alarm already exists." "Yellow"
+    }
+}
+
+function Remove-Alarm
+{
+    Param(
+        [Parameter(Mandatory=$False)]
+            [int]$Index,
+        [Parameter(Mandatory=$False)]
+            [hashtable]$Alarm,
+        [Parameter(Mandatory=$False,Position=1)]
+            [string]$Name
+    )
+
+    if( $Index -ne $null )
+    {
+        $Cerberus.Alarms.RemoveAt( $Index ) | Out-Null
+    }
+    elseif( $Alarm )
+    {
+        $Cerberus.Alarms.Remove( $Alarm ) | Out-Null
+    }
+    elseif( $Name )
+    {
+        $Cerberus.Alarms.Remove( $( Find-Alarm $Name ) ) | Out-Null
+    }
+}
+
+function Update-Alarms
+{
+    $now = $Cerberus.Timer.ElapsedMilliseconds
+
+    For( $i = 0; $i -lt $Cerberus.Alarms.Count; $i++ )
+    {
+        $alarm = $Cerberus.Alarms[ $i ]
+        if( $now -gt $alarm.Activate )
+        {
+            #Write-Log "DEBUG: Alarm '$($alarm.Name)' triggered" "Yellow"
+
+            $ExecutionContext.InvokeCommand.ExpandString( $alarm.Callback.ToString() ) | Out-Null
+
+            if( $alarm.Repeat -eq 0 )
+            {
+                Remove-Alarm -Index $i
+                $i--
+            }
+            else
+            {
+                $alarm.Activate = $now + $alarm.Delay
+
+                if( $alarm.Repeat -gt 0 )
+                {
+                    $alarm.Repeat--
+                }
+            }
+        }
+    }
+}
+
+function Find-Alarm
+{
+    Param(
+        [Parameter(Mandatory=$True,Position=1)]
+            [string]$Name
+    )
+
+    For( $i = 0; $i -lt $Cerberus.Alarms.Count; $i++ )
+    {
+        $alarm = $Cerberus.Alarms[ $i ]
+
+        if( $alarm.Name -eq $Name )
+        {
+            return $alarm
+        }
+    }
+
+    $null
+}
+
 function Send-ShutdownWarning
 {
     Param(
         [Parameter(Mandatory=$True,Position=1)]
-            [int]$millisecondsRemaining
+            [int]$WarningIndex
     )
 
-    $secondsRemaining = $millisecondsRemaining / 1000;
+    $secondsRemaining = $PZServer.WarningIntervals[ $WarningIndex ] / 1000;
 
     if( $secondsRemaining -gt 60 )
     {
-        $timeString = "in $($secondsRemaining / 60) minutes"
+        $timeString = "in $([math]::floor( $secondsRemaining / 60 )) minutes"
     }
-    elseif( $secondsRemaining -le 10 )
+    elseif( $secondsRemaining -lt 60 )
     {
         $timeString = "NOW!"
     }
@@ -401,48 +434,299 @@ function Send-ShutdownWarning
         $timeString = "in $secondsRemaining seconds"
     }
     
-    Write-Log ">RCON Server message: $($ServerWarning -f $timeString)" "Blue"
-    $res = Send-RCONServerMessage $($ServerWarning -f $timeString)
+    Write-Log ">RCON Server message: $($PZServer.WarningMessage -f $timeString)" "Blue"
+    $res = Send-RCONServerMessage $($PZServer.WarningMessage -f $timeString)
 
     if( $res.Status -eq 0 )
     {
         #Write-Log "RCON> Server message success." "Blue"
+        $PZServer.WarningIndex++
     }
     else
     {
         Write-Log "RCON> Server message FAILED($($res.Status)): `"$($res.Response)`"!" "Red"
-        Write-Log "Aborting $Operation operation!" "Red"
+        Stop-Operation -2
 
-        $script:Operation = "idle"
+        #TODO: This is a terribly hacky way to remove the relevant alarms
+        For( $i = 0; $i -lt $Cerberus.Alarms.Count; $i++ )
+        {
+            $alarm = $Cerberus.Alarms[ $i ]
+
+            if( $alarm.Name.Contains( "ShutdownWarning" ) )
+            {
+                Remove-Alarm -Index $i
+                $i--
+            }
+        }
     }
 }
 
 function Start-WarningSequence
 {
-    Write-Log "Server shutdown warning sequence initiated." "Cyan"
-    Send-ShutdownWarning $ServerWarningInterval[ 0 ]
-    $script:ShutdownWarningIndex = 1
+    Reset-WarningSequence
+    $warningDuration = $PZServer.WarningIntervals[ 0 ] / 1000
 
-    if( $ShutdownTimer -eq $null )
+    # Schedule warning messages
+    For( $i = 1; $i -lt $PZServer.WarningIntervals.Length; $i++ )
     {
-        $script:ShutdownTimer = [System.Diagnostics.Stopwatch]::StartNew()
+        Add-Alarm "ShutdownWarning-$i" $($warningDuration - ( $PZServer.WarningIntervals[ $i ] / 1000 )) "`$(Send-ShutdownWarning $i)"
+    }
+
+    Send-ShutdownWarning 0
+}
+
+function Test-WarningSequenceComplete
+{
+    $PZServer.WarningIndex -eq $PZServer.WarningIntervals.Length
+}
+
+function Reset-WarningSequence
+{
+    $PZServer.WarningIndex = 0
+}
+
+function New-Operation
+{
+    Param(
+        [Parameter(Mandatory=$True,Position=1)]
+            [string]$Callback,
+        [Parameter(Mandatory=$True,Position=2)]
+            [string]$TestComplete,
+        [Parameter(Mandatory=$False,Position=3)]
+            [string]$StartMessage,
+        [Parameter(Mandatory=$False,Position=4)]
+            [string]$CompleteMessage,
+        [Parameter(Mandatory=$False,Position=5)]
+            [string]$Color
+    )
+
+    $Operation = @{
+        Started         = $False
+        Callback        = $Callback
+        Complete        = $TestComplete
+        StartMessage    = "Starting '$Callback' Operation..."
+        CompleteMessage = "'$Callback' Operation Complete."
+        Color           = "Yellow"
+    }
+
+    if( $StartMessage )
+    {
+        $Operation.StartMessage = $StartMessage
+    }
+
+    if( $CompleteMessage )
+    {
+        $Operation.CompleteMessage = $CompleteMessage
+    }
+
+    if( $Color )
+    {
+        $Operation.Color = $Color
+    }
+
+    $Operation
+}
+
+#Add an operation to the END of the queue
+function Add-Operation
+{
+    Param(
+        [Parameter(Mandatory=$True,Position=1)]
+            [hashtable]$Operation
+    )
+
+    $Cerberus.Operations.AddLast( $Operation ) | Out-Null
+}
+
+#Add an operation to the FRONT of the queue to be activated immediately
+function Push-Operation
+{
+    Param(
+        [Parameter(Mandatory=$True,Position=1)]
+            [hashtable]$Operation
+    )
+
+    $Cerberus.Operations.AddFirst( $Operation ) | Out-Null
+}
+
+function Get-ActiveOperation
+{
+    $Operation = $Cerberus.Operations.First
+
+    if( ! $Operation )
+    {
+        #@{
+        #    Callback = "Idle"
+        #    Started = $True
+        #    Complete = '$False'
+        #}
+        $null
     }
     else
     {
-        $ShutdownTimer.Restart();
+        $Operation.Value
     }
+}
+
+function Start-Operation
+{   
+    Param(
+        [Parameter(Mandatory=$False,Position=1)]
+            [hashtable]$Operation
+    )
+
+    if( ! $Operation )
+    {
+        $Operation = Get-ActiveOperation
+    }
+
+    if( $Operation -and ( $( Test-OperationStarted $Operation ) -eq $False ) )
+    {
+        Write-Log $Operation.StartMessage $Operation.Color
+        $Operation.Started = $True
+        & $Operation.Callback
+    }
+}
+
+function Stop-Operation
+{
+    Param(
+        [Parameter(Mandatory=$False,Position=1)]
+            [int]$ExitCode
+    )
+
+    if( ! $ExitCode )
+    {
+        $ExitCode = 0
+    }
+
+    $Operation = Get-ActiveOperation
+    $Cerberus.Operations.RemoveFirst()
+
+    if( $ExitCode -eq 0 )
+    {
+        Write-Log $Operation.CompleteMessage $Operation.Color
+    }
+    elseif( $ExitCode -lt 0 )
+    {
+        Write-Log "'$($Operation.Callback)' Operation ABORTED!" "Red"
+
+        #TODO: Better cascading error response for Operations
+        if( $ExitCode -lt -1 )
+        {
+            Stop-Operation $($ExitCode + 1)
+        }
+    }
+    else
+    {
+        Write-Log "'$($Operation.Callback)' operation exited with code $ExitCode" "Red"
+    }
+}
+
+function Reset-Operation
+{
+    Param(
+        [Parameter(Mandatory=$False,Position=1)]
+            [hashtable]$Operation
+    )
+
+    if( ! $Operation )
+    {
+        $Operation = Get-ActiveOperation
+    }
+
+    if( $Operation )
+    {
+        $Operation.Started = $False
+    }
+}
+
+function Update-ActiveOperation
+{
+    $Operation = Get-ActiveOperation
+    if( Test-OperationStarted $Operation ) {
+        if( Test-OperationComplete $Operation )
+        {
+            Stop-Operation 0
+            Start-Operation
+        }
+    }
+    else
+    {
+        Start-Operation
+    }
+}
+
+function Test-OperationComplete
+{
+    Param(
+        [Parameter(Mandatory=$False,Position=1)]
+            [hashtable]$Operation
+    )
+
+    if( ! $Operation )
+    {
+        $Operation = Get-ActiveOperation
+    }
+
+    if( $Operation )
+    {
+        $result = $ExecutionContext.InvokeCommand.ExpandString( $Operation.Complete )
+        #Write-Log "DEBUG: Testing '$($Operation.Callback)' Operation Complete ($($Operation.Complete)): $($result -eq $True)"
+        $result -eq $True
+    }
+    else
+    {
+        $False
+    }
+}
+
+function Test-OperationStarted
+{
+    Param(
+        [Parameter(Mandatory=$False,Position=1)]
+            [hashtable]$Operation
+    )
+
+    if( ! $Operation )
+    {
+        $Operation = Get-ActiveOperation
+    }
+
+    if( $Operation )
+    {
+        $Operation.Started -eq $True
+    }
+    else
+    {
+        $False
+    }
+}
+
+function Test-OperationIs
+{
+    Param(
+        [Parameter(Mandatory=$True,Position=1)]
+            [hashtable]$Operation
+    )
+
+    $Operation -eq $( Get-ActiveOperation )
 }
 
 function Stop-Server
 {
-    if( $ServerStatus -eq "up" )
+    if( Test-ServerIs "up" )
     {
-        if( $Operation -eq "idle" )
+        if( ! ( Test-WarningSequenceComplete ) )
         {
-            $script:Operation = "server-stop"
-
-            Write-Log "Server shutdown commencing." "Cyan"
+            Reset-Operation
+            Push-Operation $(New-Operation 'Start-WarningSequence' '$(Test-WarningSequenceComplete)' 'Shutdown warning sequence initiated...' 'Shutdown warning sequence complete.')
+        }
+        else
+        {
+            Reset-WarningSequence
             Write-Log ">RCON Saving map data..." "Blue"
+
             $res = Send-RCONSaveWorld
 
             if( $res.Status -eq 0 )
@@ -459,52 +743,35 @@ function Stop-Server
                 else
                 {
                     Write-Log "RCON> Server 'Quit' FAILED($($res.Status)): `"$($res.Response)`"!" "Red"
-                    Write-Log "Aborting $Operation operation!" "Red"
-
-                    $script:Operation = "idle"
+                    Stop-Operation -1
                 }
             }
             else
             {
                 Write-Log "RCON> Map data save FAILED($($res.Status)): `"$($res.Response)`"!" "Red"
-                Write-Log "Aborting $Operation operation!" "Red"
-
-                $script:Operation = "idle"
+                Stop-Operation -1
             }
-        }
-        else
-        {
-            Write-Log "Cannot stop server: Operation in progress ($Operation)" "Yellow"
         }
     }
     else
     {
-        Write-Log "Cannot stop server: server is not running" "Yellow"
+        Write-Log "Cannot stop server: server not running" "Yellow"
     }
 }
 
 function Start-Server
 {
-    if( $ServerStatus -eq "down" )
+    if( Test-ServerIs "down" )
     {
-        if( $Operation -eq "idle" )
+        #Write-Log "Starting server..." "Cyan"
+
+        if( $PZServer.StartArgs.Length -gt 0 )
         {
-            $script:Operation = "server-start"
-
-            Write-Log "Starting server..." "Cyan"
-
-            if( $ServerStartArgs.Length -gt 0 )
-            {
-                Start-Process -WorkingDirectory $ServerPath -FilePath $ServerExecutable -ArgumentList $ServerStartArgs
-            }
-            else
-            {
-                Start-Process -WorkingDirectory $ServerPath -FilePath $ServerExecutable
-            }
+            Start-Process -WorkingDirectory $PZServer.Path -FilePath $PZServer.Executable -ArgumentList $PZServer.StartArgs
         }
         else
         {
-            Write-Log "Cannot start server: Operation in progress ($Operation)" "Yellow"
+            Start-Process -WorkingDirectory $PZServer.Path -FilePath $PZServer.Executable
         }
     }
     else
@@ -515,95 +782,104 @@ function Start-Server
 
 function Restart-Server
 {
-    Param(
-        [Parameter(Mandatory=$False,Position=1)]
-            [switch]$WarningSequence
-    )
+    Add-Operation $(New-Operation 'Stop-Server' '$(Test-ServerIs "down")' 'Stopping server...' 'Server stopped.')
+    Add-Operation $(New-Operation 'Start-Server' '$(Test-ServerIs "up")' 'Starting server...' 'Server started.')
+}
 
-    if( $Operation -eq "idle" )
+function Start-WorkshopWatchdog
+{
+    Add-Alarm "PollWorkshopUpdates" $Cerberus.WorkshopPollInterval '$(Update-WorkshopStatus)' -1
+    $Cerberus.WorkshopUpdateTimes = Get-CerberusWorkshopUpdateTimes $PZServer.WorkshopItems
+}
+
+function Stop-WorkshopWatchdog
+{
+    Remove-Alarm "PollWorkshopUpdates"
+    Write-Log "Workshop Watchdog stopped." "Cyan"
+}
+
+function Update-WorkshopStatus
+{
+    $updateTimes = Get-CerberusWorkshopUpdateTimes $PZServer.WorkshopItems
+
+    foreach( $workshopID in $PZServer.WorkshopItems )
     {
-        $script:Restart = $True
-
-        if( Get-ServerStatus -eq "up" )
+        if( $updateTimes[ $workshopID ] -gt $Cerberus.WorkshopUpdateTimes[ $workshopID ] )
         {
-            if( $WarningSequence )
-            {
-                $script:Operation = "restart-warning"
-
-                Start-WarningSequence
-            }
-            else
-            {
-                Stop-Server
-            }
+            Write-Log "Workshop item #$workshopID has been updated!" "Yellow"
+            Stop-WorkshopWatchdog
+            Restart-Server
+            Add-Operation $(New-Operation 'Start-WorkshopWatchdog' '$($(Find-Alarm "PollWorkshopUpdates") -ne $null)' 'Restarting Workshop Watchdog...' 'Workshop Watchdog unleashed!' 'Cyan')
         }
-        else
-        {
-            Start-Server
-        }
-    }
-    else
-    {
-        Write-Log "Cannot restart server: Operation in progress ($Operation)" "Yellow"
     }
 }
 
 function Get-ServerStatus
 {
-    $ServerStatus
+    $PZServer.Status
 }
 
 function Update-ServerStatus
 {
-    if( ( $ServerStatus -eq "down" ) -or ( $ServerStatus -eq $null ) )
+    if( ( $PZServer.Status -eq "down" ) -or ( $PZServer.Status -eq $null ) )
     {
-        $script:ServerWMIObject = $null
-        $script:ServerProcess = $null
+        $PZServer.WMIObject = $null
+        $PZServer.Process   = $null
 
         Find-ServerProcess
     }
 
-    if( ! ( $ServerProcess -eq $null ) )
+    if( $PZServer.Process -ne $null )
     {
-        $ServerProcess.Refresh()
+        $PZServer.Process.Refresh()
 
-        if( $ServerProcess.HasExited )
+        if( $PZServer.Process.HasExited )
         {
-            $script:ServerStatus = "down"
+            $PZServer.Status = "down"
         }
         else
         {
-            $script:ServerStatus = "up"
+            $PZServer.Status = "up"
         }
     }
     else
     {
-        $script:ServerStatus = "down"
+        $PZServer.Status = "down"
     }
+}
+
+function Test-ServerIs
+{
+    Param(
+        [Parameter(Mandatory=$True,Position=1)]
+            [string]$Status
+    )
+
+    $Status -eq $( Get-ServerStatus )
 }
 
 function Find-ServerWMIObject
 {
-    Get-WmiObject Win32_Process | Where-Object { $_.ExecutablePath -match "$([regex]::escape($ServerPath))" }
+    Get-WmiObject Win32_Process | Where-Object { $_.ExecutablePath -match "$([regex]::escape($PZServer.Path))" }
 }
 
 function Get-ServerWMIObject
 {
-    if( $ServerWMIObject -eq $null )
+    if( $PZServer.WMIObject -eq $null )
     {
-        $script:ServerWMIObject = Find-ServerWMIObject
+        $PZServer.WMIObject = Find-ServerWMIObject
     }
 
-    $ServerWMIObject
+    $PZServer.WMIObject
 }
 
 function Find-ServerProcess
 {
     $WMIObject = Get-ServerWMIObject
 
-    if( ! ( $WMIObject -eq $null ) )
+    if( $WMIObject -ne $null )
     {
-        $script:ServerProcess = Get-Process -id $WMIObject.ProcessId
+        $PZServer.Process = Get-Process -id $WMIObject.ProcessId
     }
 
     $null
@@ -611,113 +887,97 @@ function Find-ServerProcess
 
 function Get-ServerProcess
 {
-    if( $ServerProcess -eq $null )
+    if( $PZServer.Process -eq $null )
     {
-        $script:ServerProcess = Find-ServerProcess
+        $PZServer.Process = Find-ServerProcess
     }
 
-    $ServerProcess
+    $PZServer.Process
 }
 
+# Main Controller Body
 try
 {
-    Initialize-Cerberus # Initialize Cerberus environment & communication utilities
+    $configuration = Get-IniContent $Cerberus.ConfigFile
+
+    # Initialization routines
+    Initialize-Cerberus $configuration # Initialize Cerberus controller
+    Initialize-PZServer $configuration # Initialize PZServer process interface
+    Initialize-RCONClient $configuration @{ # Initialize RCON communication
+        Path       = "$($PZServer.Path)\rcon"
+        JavaBinary = "$($PZServer.Path)\jre\bin\java.exe"
+        Port       = $PZServer.Config.RCONPort
+        Password   = $PZServer.Config.RCONPassword
+        IP         = "127.0.0.1"
+    }
+
+    # Startup routines
     Write-ConsoleHeader # Print an informational header
     Test-Configuration  # Run preflights to make sure Cerberus doesn't blow up for obvious reasons
 
-    if( $ServerStatus -eq "down" )
+    #  - Autostart server
+    if( Test-ServerIs "down" )
     {
-        Start-Server
+        Add-Operation $(New-Operation 'Start-Server' '$(Test-ServerIs "up")' 'Starting server...' 'Server started.')
     }
+
+    #  - Start WorkshopItem watchdog
+    if( $PZServer.RestartWorkshop )
+    {
+        Add-Operation $(New-Operation 'Start-WorkshopWatchdog' '$($(Find-Alarm "PollWorkshopUpdates") -ne $null)' 'Sarting Workshop Watchdog...' 'Workshop Watchdog unleashed!' 'Cyan')
+    }
+
+    #  - Start the Cerberus clock
+    $Cerberus.Timer.Start()
+
+    #DEBUG restart alarm
+    #Add-Alarm 'Debug-TestRestart' 5 '$(Restart-Server)'
+    Add-Alarm 'DebugTestWorkshopUpdate' 10 '$($Cerberus.WorkshopUpdateTimes["498441420"] = 0)'
 
     # Main Service Loop
     while( $true )
     {
-        Update-ServerStatus
+        #$op = Get-ActiveOperation
+        #if( ! $op )
+        #{
+        #    Write-Log "DEBUG: Idle Operation Cycle @$($Cerberus.Timer.ElapsedMilliseconds)" "Yellow"
+        #}
+        #else
+        #{
+        #    Write-Log "DEBUG: $($op.Callback) Operation Cycle @$($Cerberus.Timer.ElapsedMilliseconds)" "Yellow"
+        #}
 
-        switch( $Operation )
+        Update-ServerStatus    #Update server status based on Server Process
+        Update-ActiveOperation #Update the Operation stack (Cerberus' "state")
+        Update-Alarms          #Process time-based functionality
+
+        if( Test-ServerIs "down" )
         {
-            "idle" {
-                # Restart on down
-                if( ( $ServerStatus -eq "down" ) -and $RestartOnCrash )
+            $Operation = Get-ActiveOperation
+
+            if( $Operation -eq $null )
+            {
+                Write-Log "The server stopped unexpectedly" "Red"
+
+                if( $PZServer.RestartDown )
                 {
-                    Write-Log "Server stopped unexpectedly." "Yellow"
-                    Start-Server
-                }
-
-                # Workshop Updates
-                if( $CerberusPollWorkshop )
-                {
-                    if( !$workshopPollTimer )
-                    {
-                        $workshopPollTimer = [System.Diagnostics.Stopwatch]::StartNew()
-                        $workshopItemUpdates = Get-CerberusWorkshopUpdateTimes $ServerWorkshopItems
-                        Write-Log "Workshop watchdog set loose." "Cyan"
-                    }
-
-                    if( $workshopPollTimer.ElapsedMilliseconds -gt $CerberusPollInterval )
-                    {
-                        #Write-Log "Polling for workshop updates."
-                        $updateTimes = Get-CerberusWorkshopUpdateTimes $ServerWorkshopItems
-
-                        foreach( $workshopID in $ServerWorkshopItems )
-                        {
-                            if( $updateTimes[ $workshopID ] -gt $workshopItemUpdates[ $workshopID ] )
-                            {
-                                Write-Log "Workshop item #$workshopID has been updated!" "Yellow"
-                                $FakeUpdateTimer.Reset()
-
-                                Restart-Server -WarningSequence
-                            }
-                        }
-
-                        $workshopPollTimer.Restart()
-                    }
+                    Add-Operation $(New-Operation 'Start-Server' '$(Test-ServerIs "up")' 'Starting server...' 'Server started.')
                 }
             }
-
-            "server-start" {
-                if( $ServerStatus -eq "up" )
+            else
+            {
+                Switch( $Operation.Callback )
                 {
-                    Write-Log "Server started." "Cyan"
-
-                    $script:Restart = $False
-                    $script:Operation = "idle"
-                }
-            }
-
-            "server-stop" {
-                if( $ServerStatus -eq "down" )
-                {
-                    Write-Log "Server stopped." "Cyan"
-                    $script:Operation = "idle"
-
-                    if( $Restart )
-                    {
-                        Start-Server
+                    "Start-WarningSequence" {
+                        Write-Log "The server stopped unexpectedly" "Red"
+                        Stop-Operation -2
+                        #TODO: Need to determine if we're in a restart sequence
                     }
-                }
-            }
-
-            "restart-warning" {
-                # Shutdown Sequence
-                if( $ShutdownWarningIndex -lt $ServerWarningInterval.Length )
-                {
-                    if( $ServerWarningInterval[0] - $ShutdownTimer.ElapsedMilliseconds -lt $($ServerWarningInterval[ $ShutdownWarningIndex ]) )
-                    {
-                        Send-ShutdownWarning $ServerWarningInterval[ $script:ShutdownWarningIndex++ ]
-                    }
-                }
-                else
-                {
-                    $script:Operation = "idle"
-
-                    Restart-Server
                 }
             }
         }
 
-        Start-Sleep -s $CycleInterval
+        Start-Sleep -s $Cerberus.ServiceResolution #Wait ServiceResolution seconds before performing the next iteration
     }
 }
 finally
@@ -727,5 +987,5 @@ finally
     Remove-Module CerberusClient
     Remove-Module PZRconClient
 
-    Write-Log "Cerberus client modules detached from PowerShell environment." "Cyan"
+    Write-Log "Cerberus communication modules detached from PowerShell environment." "Cyan"
 }
