@@ -932,7 +932,7 @@ try
 
     #DEBUG restart alarm
     #Add-Alarm 'Debug-TestRestart' 5 '$(Restart-Server)'
-    Add-Alarm 'DebugTestWorkshopUpdate' 10 '$($Cerberus.WorkshopUpdateTimes["498441420"] = 0)'
+    #Add-Alarm 'DebugTestWorkshopUpdate' 10 '$($Cerberus.WorkshopUpdateTimes["498441420"] = 0)'
 
     # Main Service Loop
     while( $true )
